@@ -10,22 +10,39 @@ from rdflib import Graph
 import shapely
 from h3pandas.util.shapely import polyfill
 import h3
+import duckdb
 
 
 class Speedy:
 
-    def __init__(self, mr_ldes_path: str, h3_resolution: int = 7):
-        self.mr_ldes_path = mr_ldes_path
+    def __init__(self, h3_resolution: int = 7, data_dir="speedy_data"):
+
         self.h3_resolution = h3_resolution
-        with open("data/prefixes.ttl") as f:
-            self.prefixes = f.read()
+        self.data_dir = data_dir
+
+        self.prefixes = """
+            @prefix tree: <https://w3id.org/tree#> .
+            @prefix ldes: <https://w3id.org/ldes#> .
+            @prefix dc: <http://purl.org/dc/terms/> .
+            @prefix sh: <http://www.w3.org/ns/shacl#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix gsp: <http://www.opengis.net/ont/geosparql#> .
+            @prefix dcat: <http://www.w3.org/ns/dcat#> .
+            @prefix mr: <http://marineregions.org/ns/ontology#> .
+            @prefix schema: <https://schema.org/> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix mrt: <http://marineregions.org/ns/placetypes#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix prov: <http://www.w3.org/ns/prov#> .
+        """
 
     def create_record(self) -> str:
         return self.prefixes + "\n"
 
     def parse_ldes(self, predicate: str):
 
-        with open(self.mr_ldes_path, "r") as file:
+        with open(os.path.join(self.data_dir, "MRGID-LDES-export-geometries.ttl"), "r") as file:
             record = self.create_record()
 
             for line in file:
@@ -69,8 +86,8 @@ class Speedy:
                 logging.debug(f"Empty geometry: {uri}")
                 continue
 
-            output_path = os.path.join("data", "mr_wkt", mrgid)
-            output_file = os.path.join("data", "mr_wkt", mrgid, f"{geometry_hash}.txt")
+            output_path = os.path.join(self.data_dir, "mr_wkt", mrgid)
+            output_file = os.path.join(self.data_dir, "mr_wkt", mrgid, f"{geometry_hash}.txt")
             if not os.path.exists(output_path):
                 os.makedirs(os.path.join(output_path))
             with open(output_file, "w", encoding="utf-8") as f:
@@ -79,7 +96,7 @@ class Speedy:
     def read_distribution_grid(self, aphiaid: int) -> geopandas.GeoDataFrame:
         logging.debug(f"Reading distribution data for https://www.marinespecies.org/aphia.php?p=taxdetails&id={aphiaid}")
         filters = [("AphiaID", "==", aphiaid)]
-        gdf = geopandas.read_parquet("data/h3_7/", filters=filters)
+        gdf = geopandas.read_parquet(os.path.join(self.data_dir, "h3_7"), filters=filters)
         return gdf
 
     def get_worms_mrgids(self, aphiaid: int) -> list:
@@ -133,9 +150,9 @@ class Speedy:
 
     def create_indexed_mrgid(self, mrgid: int) -> None:
         logging.debug(f"Creating indexed geometry for http://marineregions.org/mrgid/{mrgid}")
-        wkts_path = os.path.join("data", "mr_wkt", mrgid)
+        wkts_path = os.path.join(self.data_dir, "mr_wkt", mrgid)
         if not os.path.exists(wkts_path):
-            raise FileNotFoundError(f"No WKT found for http://marineregions.org/mrgid/{mrgid}")
+            raise FileNotFoundError(f"No WKT found at {wkts_path}")
         frames = []
         wkt_files = os.listdir(wkts_path)
         for file in wkt_files:
@@ -146,14 +163,15 @@ class Speedy:
         if len(frames) == 0:
             raise FileNotFoundError(f"No suitable geometries found for http://marineregions.org/mrgid/{mrgid}")
         df = pd.concat(frames, axis=0).drop_duplicates()
-        df.to_parquet(os.path.join("data", "mr_indexed", f"{mrgid}.parquet"))
+        os.makedirs(os.path.join(self.data_dir, "mr_indexed"), exist_ok=True)
+        df.to_parquet(os.path.join(self.data_dir, "mr_indexed", f"{mrgid}.parquet"))
         return df
 
     def read_indexed_mrgid(self, mrgid: str) -> pd.DataFrame:
         logging.debug(f"Trying to read indexed MRGID {mrgid}")
-        parquet_file = os.path.join("data", "mr_indexed", f"{mrgid}.parquet")
+        parquet_file = os.path.join(self.data_dir, "mr_indexed", f"{mrgid}.parquet")
         if not os.path.exists(parquet_file):
-            raise FileNotFoundError(f"No indexed geometry found for http://marineregions.org/mrgid/{mrgid}")
+            raise FileNotFoundError(f"No indexed geometry found at {parquet_file}")
         return pd.read_parquet(parquet_file)
 
     def get_worms_distribution(self, aphiaid: int) -> pd.DataFrame:
@@ -207,9 +225,8 @@ class Speedy:
         }).reset_index()
 
     def summarize_h3_duckdb(self, df: pd.DataFrame) -> pd.DataFrame:
-        import duckdb
         conn = duckdb.connect()
-        conn.register("data", df)
+        conn.register("dist_data", df)
         summ = conn.execute("""
             select
                 h3,
@@ -221,11 +238,11 @@ class Speedy:
                 max(native) as native,
                 max(introduced) as introduced,
                 max(uncertain) as uncertain
-            from data group by h3
+            from dist_data group by h3
         """).fetchdf()
         return summ
 
-    def create_summary(self, aphiaid: int, resolution: int = 7):
+    def create_summary(self, aphiaid: int, resolution: int):
 
         # get OBIS/GBIF data
 
@@ -256,16 +273,20 @@ class Speedy:
 
         # resample
 
-        if resolution < 7:
+        if resolution is not None and resolution < 7:
             merged = self.resample(merged, resolution)
 
         return merged
 
-    def get_summary(self, aphiaid: int, resolution: int = 7, cached=False) -> pd.DataFrame:
-        parquet_file = os.path.join("data", "aphia_indexed", f"{aphiaid}.parquet")
+    def get_summary(self, aphiaid: int, resolution: int, cached=False) -> pd.DataFrame:
+        os.makedirs(os.path.join(self.data_dir, "aphia_indexed"), exist_ok=True)
+        parquet_file = os.path.join(self.data_dir, "aphia_indexed", f"{aphiaid}.parquet")
         if cached and os.path.exists(parquet_file):
             summary = pd.read_parquet(parquet_file)
         else:
             summary = self.create_summary(aphiaid, resolution)
             summary.to_parquet(parquet_file)
         return summary
+
+    def export_summary(self, df: pd.DataFrame, path) -> None:
+        df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")

@@ -7,10 +7,10 @@ logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 
 
 def main():
-    sp = Speedy(mr_ldes_path="data/MRGID-LDES-export-geometries.ttl", h3_resolution=7)
+    sp = Speedy(h3_resolution=7)
     # sp.prepare_mr_wkt()
 
-    aphiaids = [159559] # 386513, 107451
+    aphiaids = [212506] # 386513, 107451
     for aphiaid in aphiaids:
         logging.info(f"Processing AphiaID {aphiaid}")
 
