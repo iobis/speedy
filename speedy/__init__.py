@@ -11,6 +11,17 @@ import shapely
 from h3pandas.util.shapely import polyfill
 import h3
 import duckdb
+from haversine import haversine, Unit
+from scipy.stats import norm
+import geopandas as gpd
+from lonboard import Map, SolidPolygonLayer
+from lonboard.colors import Temps_3, apply_continuous_cmap
+import numpy as np
+
+
+def normalize_density(d):
+    total = sum(d.values())
+    return {k: v / total for k, v in d.items()}
 
 
 class Speedy:
@@ -242,6 +253,36 @@ class Speedy:
         """).fetchdf()
         return summ
 
+    def get_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10, cached=False):
+
+        summary = self.get_summary(aphiaid, resolution, cached)
+        summary = summary[(summary["source_gbif"] == True) | (summary["source_obis"] == True)]
+
+        cells = summary["h3"].tolist()
+        densities = dict()
+
+        for cell in cells:
+            cell_latlon = h3.h3_to_geo(cell)
+            continue_cell = True
+            for i in range(max_rings):
+                ring = h3.k_ring(cell, i)
+                for ring_cell in ring:
+                    ring_cell_latlon = h3.h3_to_geo(ring_cell)
+                    distance = haversine(cell_latlon, ring_cell_latlon, unit=Unit.KILOMETERS)
+                    density = norm.pdf(distance, loc=0, scale=sd)
+                    if ring_cell in densities:
+                        densities[ring_cell] = densities[ring_cell] + density
+                    else:
+                        densities[ring_cell] = density
+                    if density < density_cutoff:
+                        continue_cell = False
+                if not continue_cell:
+                    break
+
+        normalized_densities = normalize_density(densities)
+        df = pd.DataFrame(list(normalized_densities.items()), columns=["h3", "density"])
+        return df
+
     def create_summary(self, aphiaid: int, resolution: int):
 
         # get OBIS/GBIF data
@@ -279,8 +320,8 @@ class Speedy:
         return merged
 
     def get_summary(self, aphiaid: int, resolution: int, cached=False) -> pd.DataFrame:
-        os.makedirs(os.path.join(self.data_dir, "aphia_indexed"), exist_ok=True)
-        parquet_file = os.path.join(self.data_dir, "aphia_indexed", f"{aphiaid}.parquet")
+        os.makedirs(os.path.join(self.data_dir, f"aphia_indexed_{resolution}"), exist_ok=True)
+        parquet_file = os.path.join(self.data_dir, f"aphia_indexed_{resolution}", f"{aphiaid}.parquet")
         if cached and os.path.exists(parquet_file):
             summary = pd.read_parquet(parquet_file)
         else:
@@ -290,3 +331,41 @@ class Speedy:
 
     def export_summary(self, df: pd.DataFrame, path) -> None:
         df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
+
+    def export_summary_map(self, gdf: gpd.GeoDataFrame, path: str) -> None:
+        # fix for dateline wrapping
+        offending_cells = list(gdf.cx[179:180, -90:90].index) + list(gdf.cx[-180:-179, -90:90].index)
+        gdf = gdf.loc[gdf.index.difference(offending_cells), :]
+        em = gdf["establishmentMeans"].fillna("none")
+        color_map = {
+            "native": [171, 196, 147],
+            "introduced": [245, 66, 93],
+            "uncertain": [202, 117, 255],
+            "none": [237, 167, 69]
+        }
+        colors = np.array(em.map(color_map).values.tolist()).astype("uint8")
+        polygon_layer = SolidPolygonLayer.from_geopandas(
+            gdf,
+            get_fill_color=colors,
+            opacity=0.3
+        )
+        map = Map([polygon_layer])
+        with open(path, "w") as f:
+            f.write(map.as_html().data)
+
+    def export_density(self, df: pd.DataFrame, path) -> None:
+        df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
+
+    def export_density_map(self, df: pd.Dataframe, path) -> None:
+        gdf = df.set_index("h3").h3.h3_to_geo_boundary()
+        offending = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
+        gdf = gdf.loc[gdf.index.difference(offending), :]
+        layer = SolidPolygonLayer.from_geopandas(
+            gdf,
+            opacity=1
+        )
+        normalized_density = gdf["density"] / gdf["density"].max()
+        layer.get_fill_color = apply_continuous_cmap(normalized_density, Temps_3, alpha=0.7)
+        map = Map([layer])
+        with open(path, "w") as f:
+            f.write(map.as_html().data)

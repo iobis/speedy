@@ -14,16 +14,19 @@ def main():
     for aphiaid in aphiaids:
         logging.info(f"Processing AphiaID {aphiaid}")
 
-        summary = sp.get_summary(aphiaid, resolution=5, cached=True)
-        summary.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}.parquet")
+        # summary = sp.get_summary(aphiaid, resolution=5, cached=True)
+        # summary.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}.parquet")
 
-        summary_point = summary.set_index("h3").h3.h3_to_geo()
-        summary_point.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}_point.geoparquet")
+        # summary_point = summary.set_index("h3").h3.h3_to_geo()
+        # summary_point.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}_point.geoparquet")
 
-        summary_poly = summary.set_index("h3").h3.h3_to_geo_boundary()
-        summary_poly.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}_poly.geoparquet")
+        # summary_poly = summary.set_index("h3").h3.h3_to_geo_boundary()
+        # summary_poly.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}_poly.geoparquet")
 
-        logging.info("Finished")
+        # logging.info("Finished")
+
+        df = sp.get_density(aphiaid, resolution=2, sd=2000, cached=True)
+        sp.export_density_map(df, "/Users/pieter/Desktop/density.html")
 
 
 if __name__ == "__main__":
