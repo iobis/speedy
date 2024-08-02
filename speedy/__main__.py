@@ -7,26 +7,26 @@ logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 
 
 def main():
-    sp = Speedy(h3_resolution=7)
-    # sp.prepare_mr_wkt()
 
-    aphiaids = [212506] # 386513, 107451
+    sp = Speedy(
+        h3_resolution=7,
+        cache_marineregions=True,
+        cache_summary=True,
+        cache_density=False,
+        ignore_missing_wkt=True
+    )
+
+    aphiaids = [212506]#, 386513, 107451]
+
     for aphiaid in aphiaids:
-        logging.info(f"Processing AphiaID {aphiaid}")
 
-        # summary = sp.get_summary(aphiaid, resolution=5, cached=True)
-        # summary.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}.parquet")
+        logging.info(f"Creating summary for AphiaID {aphiaid}")
+        summary = sp.get_summary(aphiaid, resolution=5)
 
-        # summary_point = summary.set_index("h3").h3.h3_to_geo()
-        # summary_point.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}_point.geoparquet")
+        logging.info(f"Creating density for AphiaID {aphiaid}")
+        density = sp.get_density(aphiaid, resolution=3, sd=1000)
 
-        # summary_poly = summary.set_index("h3").h3.h3_to_geo_boundary()
-        # summary_poly.to_parquet(f"~/Desktop/temp/summaries/summary_{aphiaid}_poly.geoparquet")
-
-        # logging.info("Finished")
-
-        df = sp.get_density(aphiaid, resolution=2, sd=2000, cached=True)
-        sp.export_density_map(df, "/Users/pieter/Desktop/density.html")
+        sp.export_map(f"/Users/pieter/Desktop/speedy_output/map_{aphiaid}.html", summary, density)
 
 
 if __name__ == "__main__":

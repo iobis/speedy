@@ -15,7 +15,8 @@ from haversine import haversine, Unit
 from scipy.stats import norm
 import geopandas as gpd
 from lonboard import Map, SolidPolygonLayer
-from lonboard.colors import Temps_3, apply_continuous_cmap
+from lonboard.colormap import apply_continuous_cmap
+from palettable.cartocolors.diverging import Temps_3
 import numpy as np
 
 
@@ -26,10 +27,14 @@ def normalize_density(d):
 
 class Speedy:
 
-    def __init__(self, h3_resolution: int = 7, data_dir="speedy_data"):
+    def __init__(self, h3_resolution: int = 7, data_dir: str = "speedy_data", cache_marineregions: bool = True, cache_summary: bool = False, cache_density: bool = False, ignore_missing_wkt = True):
 
         self.h3_resolution = h3_resolution
         self.data_dir = data_dir
+        self.cache_marineregions = cache_marineregions
+        self.cache_summary = cache_summary
+        self.cache_density = cache_density
+        self.ignore_missing_wkt = ignore_missing_wkt
 
         self.prefixes = """
             @prefix tree: <https://w3id.org/tree#> .
@@ -107,7 +112,7 @@ class Speedy:
     def read_distribution_grid(self, aphiaid: int) -> geopandas.GeoDataFrame:
         logging.debug(f"Reading distribution data for https://www.marinespecies.org/aphia.php?p=taxdetails&id={aphiaid}")
         filters = [("AphiaID", "==", aphiaid)]
-        gdf = geopandas.read_parquet(os.path.join(self.data_dir, "h3_7"), filters=filters)
+        gdf = geopandas.read_parquet(os.path.join(self.data_dir, f"distributions_{self.h3_resolution}"), filters=filters)
         return gdf
 
     def get_worms_mrgids(self, aphiaid: int) -> list:
@@ -163,7 +168,7 @@ class Speedy:
         logging.debug(f"Creating indexed geometry for http://marineregions.org/mrgid/{mrgid}")
         wkts_path = os.path.join(self.data_dir, "mr_wkt", mrgid)
         if not os.path.exists(wkts_path):
-            raise FileNotFoundError(f"No WKT found at {wkts_path}")
+            raise FileNotFoundError(f"No WKT found at {wkts_path}, may be missing from the LDES export")
         frames = []
         wkt_files = os.listdir(wkts_path)
         for file in wkt_files:
@@ -174,16 +179,18 @@ class Speedy:
         if len(frames) == 0:
             raise FileNotFoundError(f"No suitable geometries found for http://marineregions.org/mrgid/{mrgid}")
         df = pd.concat(frames, axis=0).drop_duplicates()
-        os.makedirs(os.path.join(self.data_dir, "mr_indexed"), exist_ok=True)
-        df.to_parquet(os.path.join(self.data_dir, "mr_indexed", f"{mrgid}.parquet"))
         return df
 
-    def read_indexed_mrgid(self, mrgid: str) -> pd.DataFrame:
+    def get_indexed_mrgid(self, mrgid: str) -> pd.DataFrame:
         logging.debug(f"Trying to read indexed MRGID {mrgid}")
-        parquet_file = os.path.join(self.data_dir, "mr_indexed", f"{mrgid}.parquet")
-        if not os.path.exists(parquet_file):
-            raise FileNotFoundError(f"No indexed geometry found at {parquet_file}")
-        return pd.read_parquet(parquet_file)
+        parquet_file = os.path.join(self.data_dir, f"mr_indexed_{self.h3_resolution}", f"{mrgid}.parquet")
+        if self.cache_marineregions and os.path.exists(parquet_file):
+            df = pd.read_parquet(parquet_file)
+        else:
+            df = self.create_indexed_mrgid(mrgid)
+            os.makedirs(os.path.join(self.data_dir, f"mr_indexed_{self.h3_resolution}"), exist_ok=True)
+            df.to_parquet(os.path.join(self.data_dir, f"mr_indexed_{self.h3_resolution}", f"{mrgid}.parquet"))
+        return df
 
     def get_worms_distribution(self, aphiaid: int) -> pd.DataFrame:
         logging.debug(f"Generating WoRMS distribution for https://www.marinespecies.org/aphia.php?p=taxdetails&id={aphiaid}")
@@ -192,17 +199,15 @@ class Speedy:
         for shape in shapes:
             mrgid = shape["mrgid"]
             try:
-                df = self.read_indexed_mrgid(mrgid)
-            except FileNotFoundError as read_error:
-                logging.error(read_error)
-                try:
-                    df = self.create_indexed_mrgid(mrgid)
-                except FileNotFoundError as create_error:
-                    logging.error(create_error)
-                    continue
-            df["mrgid"] = mrgid
-            df["establishmentMeans"] = shape["establishmentMeans"]
-            frames.append(df)
+                df = self.get_indexed_mrgid(mrgid)
+                df["mrgid"] = mrgid
+                df["establishmentMeans"] = shape["establishmentMeans"]
+                frames.append(df)
+            except FileNotFoundError as e:
+                if self.ignore_missing_wkt:
+                    logging.error(e)
+                else:
+                    raise
         return pd.concat(frames, axis=0)
 
     def set_establishmentmeans(self, df):
@@ -253,9 +258,8 @@ class Speedy:
         """).fetchdf()
         return summ
 
-    def get_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10, cached=False):
-
-        summary = self.get_summary(aphiaid, resolution, cached)
+    def create_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10):
+        summary = self.get_summary(aphiaid, resolution, as_geopandas=False)
         summary = summary[(summary["source_gbif"] == True) | (summary["source_obis"] == True)]
 
         cells = summary["h3"].tolist()
@@ -281,13 +285,31 @@ class Speedy:
 
         normalized_densities = normalize_density(densities)
         df = pd.DataFrame(list(normalized_densities.items()), columns=["h3", "density"])
+
+        df_sorted = df.sort_values(by="density", ascending=False).reset_index(drop=True)
+        df_sorted["cumulative_sum"] = df_sorted["density"].cumsum()
+        df_sorted["percentile"] = (1 - df_sorted["cumulative_sum"])
+        df = df.merge(df_sorted[["density", "percentile"]], on="density", how="left")
+
         return df
+
+    def get_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10, as_geopandas: bool = True) -> pd.DataFrame:
+        parquet_file = os.path.join(self.data_dir, f"density_{resolution}", f"{aphiaid}.parquet")
+        if self.cache_density and os.path.exists(parquet_file):
+            density = pd.read_parquet(parquet_file)
+        else:
+            density = self.create_density(aphiaid, resolution, max_rings, sd, density_cutoff)
+            os.makedirs(os.path.join(self.data_dir, f"density_{resolution}"), exist_ok=True)
+            density.to_parquet(parquet_file)
+        if as_geopandas:
+            density = density.set_index("h3").h3.h3_to_geo_boundary()
+        return density
 
     def create_summary(self, aphiaid: int, resolution: int):
 
         # get OBIS/GBIF data
 
-        distribution_grid = self.read_distribution_grid(aphiaid).filter(["h3_07", "source_obis", "source_gbif", "min_year", "max_year", "records"]).rename({"h3_07": "h3"}, axis=1)
+        distribution_grid = self.read_distribution_grid(aphiaid).filter([f"h3_0{self.h3_resolution}", "source_obis", "source_gbif", "min_year", "max_year", "records"]).rename({f"h3_0{self.h3_resolution}": "h3"}, axis=1)
         distribution_grid["records"] = distribution_grid["records"].astype("Int64")
 
         # get WoRMS distribution
@@ -314,25 +336,24 @@ class Speedy:
 
         # resample
 
-        if resolution is not None and resolution < 7:
+        if resolution is not None and resolution < self.h3_resolution:
             merged = self.resample(merged, resolution)
 
         return merged
 
-    def get_summary(self, aphiaid: int, resolution: int, cached=False) -> pd.DataFrame:
-        os.makedirs(os.path.join(self.data_dir, f"aphia_indexed_{resolution}"), exist_ok=True)
-        parquet_file = os.path.join(self.data_dir, f"aphia_indexed_{resolution}", f"{aphiaid}.parquet")
-        if cached and os.path.exists(parquet_file):
+    def get_summary(self, aphiaid: int, resolution: int, as_geopandas: bool = True) -> pd.DataFrame:
+        parquet_file = os.path.join(self.data_dir, f"summary_{resolution}", f"{aphiaid}.parquet")
+        if self.cache_summary and os.path.exists(parquet_file):
             summary = pd.read_parquet(parquet_file)
         else:
             summary = self.create_summary(aphiaid, resolution)
+            os.makedirs(os.path.join(self.data_dir, f"summary_{resolution}"), exist_ok=True)
             summary.to_parquet(parquet_file)
+        if as_geopandas:
+            summary = summary.set_index("h3").h3.h3_to_geo_boundary()
         return summary
 
-    def export_summary(self, df: pd.DataFrame, path) -> None:
-        df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
-
-    def export_summary_map(self, gdf: gpd.GeoDataFrame, path: str) -> None:
+    def create_summary_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
         # fix for dateline wrapping
         offending_cells = list(gdf.cx[179:180, -90:90].index) + list(gdf.cx[-180:-179, -90:90].index)
         gdf = gdf.loc[gdf.index.difference(offending_cells), :]
@@ -349,15 +370,9 @@ class Speedy:
             get_fill_color=colors,
             opacity=0.3
         )
-        map = Map([polygon_layer])
-        with open(path, "w") as f:
-            f.write(map.as_html().data)
+        return polygon_layer
 
-    def export_density(self, df: pd.DataFrame, path) -> None:
-        df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
-
-    def export_density_map(self, df: pd.Dataframe, path) -> None:
-        gdf = df.set_index("h3").h3.h3_to_geo_boundary()
+    def create_density_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
         offending = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
         gdf = gdf.loc[gdf.index.difference(offending), :]
         layer = SolidPolygonLayer.from_geopandas(
@@ -365,7 +380,23 @@ class Speedy:
             opacity=1
         )
         normalized_density = gdf["density"] / gdf["density"].max()
-        layer.get_fill_color = apply_continuous_cmap(normalized_density, Temps_3, alpha=0.7)
-        map = Map([layer])
+        layer.get_fill_color = apply_continuous_cmap(normalized_density, Temps_3, alpha=0.4)
+        return layer
+
+    def export_summary(self, df: pd.DataFrame, path) -> None:
+        df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
+
+    def export_density(self, df: pd.DataFrame, path) -> None:
+        df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
+
+    def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None) -> None:
+        layers = []
+        if density is not None:
+            layer = self.create_density_layer(density)
+            layers.append(layer)
+        if summary is not None:
+            layer = self.create_summary_layer(summary)
+            layers.append(layer)
+        map = Map(layers)
         with open(path, "w") as f:
             f.write(map.as_html().data)
