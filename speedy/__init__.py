@@ -5,8 +5,6 @@ import logging
 import pyworms
 import pandas as pd
 import os
-import hashlib
-from rdflib import Graph
 import shapely
 from h3pandas.util.shapely import polyfill
 import h3
@@ -35,79 +33,6 @@ class Speedy:
         self.cache_summary = cache_summary
         self.cache_density = cache_density
         self.ignore_missing_wkt = ignore_missing_wkt
-
-        self.prefixes = """
-            @prefix tree: <https://w3id.org/tree#> .
-            @prefix ldes: <https://w3id.org/ldes#> .
-            @prefix dc: <http://purl.org/dc/terms/> .
-            @prefix sh: <http://www.w3.org/ns/shacl#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
-            @prefix gsp: <http://www.opengis.net/ont/geosparql#> .
-            @prefix dcat: <http://www.w3.org/ns/dcat#> .
-            @prefix mr: <http://marineregions.org/ns/ontology#> .
-            @prefix schema: <https://schema.org/> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix mrt: <http://marineregions.org/ns/placetypes#> .
-            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix prov: <http://www.w3.org/ns/prov#> .
-        """
-
-    def create_record(self) -> str:
-        return self.prefixes + "\n"
-
-    def parse_ldes(self, predicate: str):
-
-        with open(os.path.join(self.data_dir, "MRGID-LDES-export-geometries.ttl"), "r") as file:
-            record = self.create_record()
-
-            for line in file:
-                line = line.strip()
-                record = record + "\n" + line
-
-                if line.endswith(" ."):
-                    g = Graph()
-                    ttl = g.parse(data=record, format="ttl")
-                    for stmt in ttl:
-                        if str(stmt[1]) == predicate:
-                            yield stmt
-
-                    record = self.create_record()
-
-    def prepare_mr_wkt(self) -> None:
-
-        # first pass to get mrgid geometry mapping
-
-        logging.info("Collecting all geometry URIs")
-        geometry_mrgids = dict()
-
-        for stmt in self.parse_ldes("http://marineregions.org/ns/ontology#hasGeometry"):
-            uri = str(stmt[0])
-            geometry = str(stmt[2])
-            geometry_mrgids[geometry] = uri
-
-        # second pass
-
-        logging.info("Exporting all gemetries by MRGID")
-
-        for stmt in self.parse_ldes("http://www.opengis.net/ont/geosparql#asWKT"):
-
-            uri = str(stmt[0])
-            wkt = str(stmt[2])
-
-            mrgid = re.search("[0-9]+", geometry_mrgids[uri]).group()
-            geometry_hash = hashlib.md5(uri.encode()).hexdigest()
-
-            if len(wkt.strip()) == 0:
-                logging.debug(f"Empty geometry: {uri}")
-                continue
-
-            output_path = os.path.join(self.data_dir, "mr_wkt", mrgid)
-            output_file = os.path.join(self.data_dir, "mr_wkt", mrgid, f"{geometry_hash}.txt")
-            if not os.path.exists(output_path):
-                os.makedirs(os.path.join(output_path))
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(wkt)
 
     def read_distribution_grid(self, aphiaid: int) -> geopandas.GeoDataFrame:
         logging.debug(f"Reading distribution data for https://www.marinespecies.org/aphia.php?p=taxdetails&id={aphiaid}")

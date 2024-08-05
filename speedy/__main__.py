@@ -1,4 +1,5 @@
 from speedy import Speedy
+from speedy.data import prepare_mr_wkt
 import logging
 
 
@@ -7,6 +8,8 @@ logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 
 
 def main():
+
+    # prepare_mr_wkt("../../speedy_output")
 
     sp = Speedy(
         h3_resolution=7,
