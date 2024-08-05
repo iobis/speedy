@@ -330,13 +330,23 @@ class Speedy:
         )
         return layer
 
+    def create_envelope_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
+        offending = list(gdf.cx[179:180, -90:90].index) + list(gdf.cx[-180:-179, -90:90].index)
+        gdf = gdf.loc[gdf.index.difference(offending), :]
+        layer = SolidPolygonLayer.from_geopandas(
+            gdf,
+            get_fill_color=[146, 181, 85],
+            opacity=0.3
+        )
+        return layer
+
     def export_summary(self, df: pd.DataFrame, path) -> None:
         df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
 
     def export_density(self, df: pd.DataFrame, path) -> None:
         df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
 
-    def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None, distribution: geopandas.GeoDataFrame = None) -> None:
+    def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None, distribution: geopandas.GeoDataFrame = None, envelope: geopandas.GeoDataFrame = None) -> None:
         layers = []
         if density is not None:
             layer = self.create_density_layer(density)
@@ -346,6 +356,9 @@ class Speedy:
             layers.append(layer)
         if distribution is not None:
             layer = self.create_distribution_layer(distribution)
+            layers.append(layer)
+        if envelope is not None:
+            layer = self.create_envelope_layer(envelope)
             layers.append(layer)
         map = Map(layers)
         with open(path, "w") as f:

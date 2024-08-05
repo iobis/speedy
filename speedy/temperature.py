@@ -7,6 +7,8 @@ from scipy.stats import gaussian_kde
 from statsmodels.distributions.empirical_distribution import ECDF
 from matplotlib import pyplot as plt
 import geopandas
+import xarray
+import geopandas as gpd
 
 
 def get_indexes(lats, lons, input_lat, input_lon):
@@ -32,17 +34,38 @@ def kde_cdf(x, kde, samples):
 def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, data_dir: str = DEFAULT_DATA_DIR):
     kde_bandwidth = 0.5
     percentiles = (1, 99)
+    temperature_file = os.path.join(data_dir, TEMPERATURE_FILENAME)
 
     # TODO: handle missing data (coastal)
-    f = netCDF4.Dataset(os.path.join(data_dir, TEMPERATURE_FILENAME))
+    # TODO: convert to xarray?
+    f = netCDF4.Dataset(temperature_file)
     temp = f.variables["thetao_mean"]
-    latvals = f.variables["lat"][:]
-    lonvals = f.variables["lon"][:]
+    lat_vals = f.variables["lat"][:]
+    lon_vals = f.variables["lon"][:]
 
-    temperatures = [get_temperature(coord[0], coord[1], lonvals, latvals, temp) for coord in zip(distribution["geometry"].x , distribution["geometry"].y)]
+    temperatures = [get_temperature(coord[0], coord[1], lon_vals, lat_vals, temp) for coord in zip(distribution["geometry"].x , distribution["geometry"].y)]
     temperatures = np.array([t.item() for t in temperatures if t is not None])
 
     kde = gaussian_kde(temperatures, bw_method=kde_bandwidth)
     resampled = kde.resample(10000)
     percentiles = (np.percentile(resampled, percentiles[0]), np.percentile(resampled, percentiles[1]))
-    print(percentiles)
+
+    # mask
+
+    resolution = 5
+
+    xds = xarray.open_dataset(temperature_file, engine="rasterio")    
+    thetao = xds["thetao_mean"].sel(time="2010-01-01")
+    envelope = thetao.where(thetao >= percentiles[0]).where(thetao <= percentiles[1])
+
+    df = envelope.to_dataframe().reset_index()
+    df = df[df["thetao_mean"].notna()]
+    df = df.h3.geo_to_h3(resolution, lat_col="y", lng_col="x", set_index=False)
+    df["h3"] = df[f"h3_0{resolution}"]
+    df = df[["h3"]].drop_duplicates()
+    df = df.set_index("h3").h3.h3_to_geo_boundary()
+
+    # df["dummy"] = 0
+    # df = df.dissolve(by="dummy")
+
+    return df
