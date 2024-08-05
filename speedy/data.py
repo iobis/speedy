@@ -3,6 +3,8 @@ import logging
 import os
 import hashlib
 from rdflib import Graph
+from urllib.request import urlretrieve
+from speedy.config import DEFAULT_DATA_DIR, MR_LDES_FILENAME, TEMPERATURE_URL, TEMPERATURE_FILENAME
 
 
 prefixes = """
@@ -27,9 +29,9 @@ def create_record() -> str:
     return prefixes + "\n"
 
 
-def parse_ldes(data_dir: str = "speedy_data", predicate: str = None):
+def parse_ldes(data_dir: str = DEFAULT_DATA_DIR, predicate: str = None):
 
-    with open(os.path.join(data_dir, "MRGID-LDES-export-geometries.ttl"), "r") as file:
+    with open(os.path.join(data_dir, MR_LDES_FILENAME), "r") as file:
         record = create_record()
 
         for line in file:
@@ -46,7 +48,7 @@ def parse_ldes(data_dir: str = "speedy_data", predicate: str = None):
                 record = create_record()
 
 
-def prepare_mr_wkt(data_dir: str = "speedy_data") -> None:
+def prepare_mr_wkt(data_dir: str = DEFAULT_DATA_DIR) -> None:
 
     # first pass to get mrgid geometry mapping
 
@@ -80,3 +82,9 @@ def prepare_mr_wkt(data_dir: str = "speedy_data") -> None:
             os.makedirs(os.path.join(output_path))
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(wkt)
+
+
+def download_temperature(data_dir: str = DEFAULT_DATA_DIR) -> None:
+    target = os.path.join(data_dir, TEMPERATURE_FILENAME)
+    logging.info(f"Downloading temperature data from {TEMPERATURE_URL} to {target}")
+    urlretrieve(TEMPERATURE_URL, target)

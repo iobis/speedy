@@ -16,6 +16,8 @@ from lonboard.colormap import apply_continuous_cmap
 from palettable.cartocolors.diverging import Temps_3
 from palettable.cubehelix import classic_16, cubehelix1_16
 import numpy as np
+from speedy.temperature import get_temperature, calculate_thermal_envelope
+from speedy.config import DEFAULT_DATA_DIR
 
 
 def normalize_density(d):
@@ -25,7 +27,7 @@ def normalize_density(d):
 
 class Speedy:
 
-    def __init__(self, h3_resolution: int = 7, data_dir: str = "speedy_data", cache_marineregions: bool = True, cache_summary: bool = False, cache_density: bool = False, ignore_missing_wkt = True):
+    def __init__(self, h3_resolution: int = 7, data_dir: str = DEFAULT_DATA_DIR, cache_marineregions: bool = True, cache_summary: bool = False, cache_density: bool = False, ignore_missing_wkt = True):
 
         self.h3_resolution = h3_resolution
         self.data_dir = data_dir
@@ -229,6 +231,13 @@ class Speedy:
         if as_geopandas:
             density = density.set_index("h3").h3.h3_to_geo_boundary()
         return density
+
+    def get_thermal_envelope(self, aphiaid: int):
+        distribution = self.read_distribution_grid(aphiaid)
+        temperatures = [get_temperature(coord[0], coord[1]) for coord in zip(distribution["geometry"].x , distribution["geometry"].y)]
+        temperatures = np.array([t.item() for t in temperatures if t is not None])
+        envelope = calculate_thermal_envelope(temperatures)
+        return envelope
 
     def create_summary(self, aphiaid: int, resolution: int):
 
