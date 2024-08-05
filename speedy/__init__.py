@@ -18,6 +18,7 @@ from palettable.cubehelix import classic_16, cubehelix1_16
 import numpy as np
 from speedy.temperature import get_temperature, calculate_thermal_envelope
 from speedy.config import DEFAULT_DATA_DIR
+import antimeridian
 
 
 def normalize_density(d):
@@ -286,9 +287,8 @@ class Speedy:
         return summary
 
     def create_summary_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
-        # fix for dateline wrapping
-        offending_cells = list(gdf.cx[179:180, -90:90].index) + list(gdf.cx[-180:-179, -90:90].index)
-        gdf = gdf.loc[gdf.index.difference(offending_cells), :]
+        indexes_to_fix = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
+        gdf.loc[indexes_to_fix, "geometry"] = gdf.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
         em = gdf["establishmentMeans"].fillna("none")
         color_map = {
             "native": [171, 196, 147],
@@ -305,8 +305,8 @@ class Speedy:
         return polygon_layer
 
     def create_density_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
-        offending = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
-        gdf = gdf.loc[gdf.index.difference(offending), :]
+        indexes_to_fix = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
+        gdf.loc[indexes_to_fix, "geometry"] = gdf.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
         gdf = gdf[gdf["percentile"] >= 0.01]
         layer = SolidPolygonLayer.from_geopandas(
             gdf,
@@ -331,8 +331,8 @@ class Speedy:
         return layer
 
     def create_envelope_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
-        offending = list(gdf.cx[179:180, -90:90].index) + list(gdf.cx[-180:-179, -90:90].index)
-        gdf = gdf.loc[gdf.index.difference(offending), :]
+        indexes_to_fix = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
+        gdf.loc[indexes_to_fix, "geometry"] = gdf.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
         layer = SolidPolygonLayer.from_geopandas(
             gdf,
             get_fill_color=[146, 181, 85],
