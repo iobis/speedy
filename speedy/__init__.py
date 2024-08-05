@@ -13,10 +13,10 @@ import h3
 import duckdb
 from haversine import haversine, Unit
 from scipy.stats import norm
-import geopandas as gpd
-from lonboard import Map, SolidPolygonLayer
+from lonboard import Map, SolidPolygonLayer, ScatterplotLayer
 from lonboard.colormap import apply_continuous_cmap
 from palettable.cartocolors.diverging import Temps_3
+from palettable.cubehelix import classic_16, cubehelix1_16
 import numpy as np
 
 
@@ -289,7 +289,7 @@ class Speedy:
         df_sorted = df.sort_values(by="density", ascending=False).reset_index(drop=True)
         df_sorted["cumulative_sum"] = df_sorted["density"].cumsum()
         df_sorted["percentile"] = (1 - df_sorted["cumulative_sum"])
-        df = df.merge(df_sorted[["density", "percentile"]], on="density", how="left")
+        df = df.merge(df_sorted[["h3", "percentile"]], on="h3", how="left")
 
         return df
 
@@ -375,6 +375,7 @@ class Speedy:
     def create_density_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
         offending = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
         gdf = gdf.loc[gdf.index.difference(offending), :]
+        gdf = gdf[gdf["percentile"] >= 0.01]
         layer = SolidPolygonLayer.from_geopandas(
             gdf,
             opacity=1
@@ -383,19 +384,36 @@ class Speedy:
         layer.get_fill_color = apply_continuous_cmap(normalized_density, Temps_3, alpha=0.4)
         return layer
 
+    def create_distribution_layer(self, gdf: geopandas.GeoDataFrame) -> ScatterplotLayer:
+        layer = ScatterplotLayer.from_geopandas(
+            gdf,
+            get_line_color=[0, 0, 0],
+            opacity=1,
+            radius_min_pixels=3,
+            radius_max_pixels=3,
+            stroked=True,
+            filled=False,
+            line_width_min_pixels=1,
+            line_width_max_pixels=1
+        )
+        return layer
+
     def export_summary(self, df: pd.DataFrame, path) -> None:
         df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
 
     def export_density(self, df: pd.DataFrame, path) -> None:
         df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
 
-    def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None) -> None:
+    def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None, distribution: geopandas.GeoDataFrame = None) -> None:
         layers = []
         if density is not None:
             layer = self.create_density_layer(density)
             layers.append(layer)
         if summary is not None:
             layer = self.create_summary_layer(summary)
+            layers.append(layer)
+        if distribution is not None:
+            layer = self.create_distribution_layer(distribution)
             layers.append(layer)
         map = Map(layers)
         with open(path, "w") as f:

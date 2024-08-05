@@ -16,7 +16,11 @@ def main():
         ignore_missing_wkt=True
     )
 
-    aphiaids = [212506]#, 386513, 107451]
+    aphiaids = [
+        212506,
+        386513,
+        107451
+    ]
 
     for aphiaid in aphiaids:
 
@@ -26,7 +30,10 @@ def main():
         logging.info(f"Creating density for AphiaID {aphiaid}")
         density = sp.get_density(aphiaid, resolution=3, sd=1000)
 
-        sp.export_map(f"/Users/pieter/Desktop/speedy_output/map_{aphiaid}.html", summary, density)
+        logging.info(f"Fetching points for AphiaID {aphiaid}")
+        distribution = sp.read_distribution_grid(aphiaid)
+
+        sp.export_map(f"../../speedy_output/map_{aphiaid}.html", summary, density, distribution)
 
 
 if __name__ == "__main__":
