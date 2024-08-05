@@ -234,9 +234,7 @@ class Speedy:
 
     def get_thermal_envelope(self, aphiaid: int):
         distribution = self.read_distribution_grid(aphiaid)
-        temperatures = [get_temperature(coord[0], coord[1]) for coord in zip(distribution["geometry"].x , distribution["geometry"].y)]
-        temperatures = np.array([t.item() for t in temperatures if t is not None])
-        envelope = calculate_thermal_envelope(temperatures)
+        envelope = calculate_thermal_envelope(distribution, self.data_dir)
         return envelope
 
     def create_summary(self, aphiaid: int, resolution: int):

@@ -1,1 +1,3 @@
 h3==4.0.0b3
+netCDF4
+statsmodels
