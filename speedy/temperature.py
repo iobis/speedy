@@ -31,7 +31,7 @@ def kde_cdf(x, kde, samples):
     return kde.integrate_box_1d(-np.inf, x)
 
 
-def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, data_dir: str = DEFAULT_DATA_DIR):
+def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, resolution: int, data_dir: str = DEFAULT_DATA_DIR):
     kde_bandwidth = 0.5
     percentiles = (1, 99)
     temperature_file = os.path.join(data_dir, TEMPERATURE_FILENAME)
@@ -52,9 +52,7 @@ def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, data_dir: s
 
     # mask
 
-    resolution = 5
-
-    xds = xarray.open_dataset(temperature_file, engine="rasterio")    
+    xds = xarray.open_dataset(temperature_file, engine="rasterio")
     thetao = xds["thetao_mean"].sel(time="2010-01-01")
     envelope = thetao.where(thetao >= percentiles[0]).where(thetao <= percentiles[1])
 
@@ -63,9 +61,5 @@ def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, data_dir: s
     df = df.h3.geo_to_h3(resolution, lat_col="y", lng_col="x", set_index=False)
     df["h3"] = df[f"h3_0{resolution}"]
     df = df[["h3"]].drop_duplicates()
-    df = df.set_index("h3").h3.h3_to_geo_boundary()
-
-    # df["dummy"] = 0
-    # df = df.dissolve(by="dummy")
 
     return df

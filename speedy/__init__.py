@@ -28,13 +28,14 @@ def normalize_density(d):
 
 class Speedy:
 
-    def __init__(self, h3_resolution: int = 7, data_dir: str = DEFAULT_DATA_DIR, cache_marineregions: bool = True, cache_summary: bool = False, cache_density: bool = False, ignore_missing_wkt = True):
+    def __init__(self, h3_resolution: int = 7, data_dir: str = DEFAULT_DATA_DIR, cache_marineregions: bool = True, cache_summary: bool = False, cache_density: bool = False, cache_envelope: bool = False, ignore_missing_wkt = True):
 
         self.h3_resolution = h3_resolution
         self.data_dir = data_dir
         self.cache_marineregions = cache_marineregions
         self.cache_summary = cache_summary
         self.cache_density = cache_density
+        self.cache_envelope = cache_envelope
         self.ignore_missing_wkt = ignore_missing_wkt
 
     def read_distribution_grid(self, aphiaid: int) -> geopandas.GeoDataFrame:
@@ -221,7 +222,7 @@ class Speedy:
 
         return df
 
-    def get_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10, as_geopandas: bool = True) -> pd.DataFrame:
+    def get_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10, as_geopandas: bool = True, wrap_dateline: bool = True) -> pd.DataFrame:
         parquet_file = os.path.join(self.data_dir, f"density_{resolution}", f"{aphiaid}.parquet")
         if self.cache_density and os.path.exists(parquet_file):
             density = pd.read_parquet(parquet_file)
@@ -231,11 +232,28 @@ class Speedy:
             density.to_parquet(parquet_file)
         if as_geopandas:
             density = density.set_index("h3").h3.h3_to_geo_boundary()
+            if wrap_dateline:
+                indexes_to_fix = list(density.cx[178:180, -90:90].index) + list(density.cx[-180:-178, -90:90].index)
+                density.loc[indexes_to_fix, "geometry"] = density.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
         return density
 
-    def get_thermal_envelope(self, aphiaid: int):
-        distribution = self.read_distribution_grid(aphiaid)
-        envelope = calculate_thermal_envelope(distribution, self.data_dir)
+    def get_thermal_envelope(self, aphiaid: int, resolution: int, as_geopandas: bool = True, wrap_dateline: bool = True, dissolve: bool = False) -> geopandas.GeoDataFrame:
+        parquet_file = os.path.join(self.data_dir, f"envelope_{resolution}", f"{aphiaid}.parquet")
+        if self.cache_envelope and os.path.exists(parquet_file):
+            envelope = pd.read_parquet(parquet_file)
+        else:
+            distribution = self.read_distribution_grid(aphiaid)
+            envelope = calculate_thermal_envelope(distribution, resolution, self.data_dir)
+            os.makedirs(os.path.join(self.data_dir, f"envelope_{resolution}"), exist_ok=True)
+            envelope.to_parquet(parquet_file)
+        if as_geopandas:
+            envelope = envelope.set_index("h3").h3.h3_to_geo_boundary()
+            if wrap_dateline:
+                indexes_to_fix = list(envelope.cx[178:180, -90:90].index) + list(envelope.cx[-180:-178, -90:90].index)
+                envelope.loc[indexes_to_fix, "geometry"] = envelope.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
+            if dissolve:
+                envelope["thermal_envelope"] = True
+                envelope = envelope.dissolve(by="thermal_envelope")
         return envelope
 
     def create_summary(self, aphiaid: int, resolution: int):
@@ -274,7 +292,7 @@ class Speedy:
 
         return merged
 
-    def get_summary(self, aphiaid: int, resolution: int, as_geopandas: bool = True) -> pd.DataFrame:
+    def get_summary(self, aphiaid: int, resolution: int, as_geopandas: bool = True, wrap_dateline: bool = True, dissolve: bool = False) -> pd.DataFrame:
         parquet_file = os.path.join(self.data_dir, f"summary_{resolution}", f"{aphiaid}.parquet")
         if self.cache_summary and os.path.exists(parquet_file):
             summary = pd.read_parquet(parquet_file)
@@ -284,11 +302,14 @@ class Speedy:
             summary.to_parquet(parquet_file)
         if as_geopandas:
             summary = summary.set_index("h3").h3.h3_to_geo_boundary()
+            if wrap_dateline:
+                indexes_to_fix = list(summary.cx[178:180, -90:90].index) + list(summary.cx[-180:-178, -90:90].index)
+                summary.loc[indexes_to_fix, "geometry"] = summary.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
+            if dissolve:
+                summary = summary.dissolve(by=["source_obis", "source_gbif", "native", "introduced", "uncertain", "establishmentMeans"], as_index=False, dropna=False)[["source_obis", "source_gbif", "native", "introduced", "uncertain", "establishmentMeans", "geometry"]]
         return summary
 
     def create_summary_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
-        indexes_to_fix = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
-        gdf.loc[indexes_to_fix, "geometry"] = gdf.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
         em = gdf["establishmentMeans"].fillna("none")
         color_map = {
             "native": [171, 196, 147],
@@ -305,8 +326,6 @@ class Speedy:
         return polygon_layer
 
     def create_density_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
-        indexes_to_fix = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
-        gdf.loc[indexes_to_fix, "geometry"] = gdf.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
         gdf = gdf[gdf["percentile"] >= 0.01]
         layer = SolidPolygonLayer.from_geopandas(
             gdf,
@@ -331,8 +350,6 @@ class Speedy:
         return layer
 
     def create_envelope_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
-        indexes_to_fix = list(gdf.cx[178:180, -90:90].index) + list(gdf.cx[-180:-178, -90:90].index)
-        gdf.loc[indexes_to_fix, "geometry"] = gdf.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
         layer = SolidPolygonLayer.from_geopandas(
             gdf,
             get_fill_color=[146, 181, 85],
@@ -348,6 +365,9 @@ class Speedy:
 
     def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None, distribution: geopandas.GeoDataFrame = None, envelope: geopandas.GeoDataFrame = None) -> None:
         layers = []
+        if envelope is not None:
+            layer = self.create_envelope_layer(envelope)
+            layers.append(layer)
         if density is not None:
             layer = self.create_density_layer(density)
             layers.append(layer)
@@ -356,9 +376,6 @@ class Speedy:
             layers.append(layer)
         if distribution is not None:
             layer = self.create_distribution_layer(distribution)
-            layers.append(layer)
-        if envelope is not None:
-            layer = self.create_envelope_layer(envelope)
             layers.append(layer)
         map = Map(layers)
         with open(path, "w") as f:

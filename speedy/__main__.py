@@ -18,6 +18,7 @@ def main():
         cache_marineregions=True,
         cache_summary=True,
         cache_density=True,
+        cache_envelope=True,
         ignore_missing_wkt=True
     )
 
@@ -29,17 +30,23 @@ def main():
 
     for aphiaid in aphiaids:
 
+        # TODO: try JSON and other output formats with compacted data for mapbox
+
         logging.info(f"Creating summary for AphiaID {aphiaid}")
-        summary = sp.get_summary(aphiaid, resolution=5)
+        summary = sp.get_summary(aphiaid, resolution=5, dissolve=True)
+        summary.to_file(f"../../speedy_output/summary_{aphiaid}.geojson", driver="GeoJSON")
 
         logging.info(f"Creating density for AphiaID {aphiaid}")
         density = sp.get_density(aphiaid, resolution=3, sd=1000)
+        density.to_file(f"../../speedy_output/density_{aphiaid}.geojson", driver="GeoJSON")
 
         logging.info(f"Fetching points for AphiaID {aphiaid}")
         distribution = sp.read_distribution_grid(aphiaid)
+        distribution.to_file(f"../../speedy_output/distribution_{aphiaid}.geojson", driver="GeoJSON")
 
         logging.info(f"Fetching points for AphiaID {aphiaid}")
-        envelope = sp.get_thermal_envelope(aphiaid)
+        envelope = sp.get_thermal_envelope(aphiaid, resolution=5, dissolve=True)
+        envelope.to_file(f"../../speedy_output/envelope_{aphiaid}.geojson", driver="GeoJSON")
 
         sp.export_map(f"../../speedy_output/map_{aphiaid}.html", summary, density, distribution, envelope)
 
