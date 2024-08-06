@@ -3,3 +3,4 @@ data
 *.pyc
 .vscode
 speedy.egg-info
+speedy_output
