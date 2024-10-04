@@ -4,3 +4,6 @@ data
 .vscode
 speedy.egg-info
 speedy_output
+build
+dist
+speedy_data

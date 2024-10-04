@@ -32,6 +32,10 @@ def kde_cdf(x, kde, samples):
 
 
 def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, resolution: int, data_dir: str = DEFAULT_DATA_DIR):
+
+    if distribution.empty:
+        return None
+
     kde_bandwidth = 0.5
     percentiles = (1, 99)
     temperature_file = os.path.join(data_dir, TEMPERATURE_FILENAME)
@@ -45,6 +49,9 @@ def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, resolution:
 
     temperatures = [get_temperature(coord[0], coord[1], lon_vals, lat_vals, temp) for coord in zip(distribution["geometry"].x , distribution["geometry"].y)]
     temperatures = np.array([t.item() for t in temperatures if t is not None])
+
+    if len(temperatures) < 3:
+        return None
 
     kde = gaussian_kde(temperatures, bw_method=kde_bandwidth)
     resampled = kde.resample(10000)
