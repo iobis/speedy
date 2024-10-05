@@ -1,4 +1,5 @@
 h3==4.0.0b3
 netCDF4
 statsmodels
-antimeridian
+antimeridian==0.3.8
+shapely==2.0.6

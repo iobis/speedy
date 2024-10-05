@@ -48,7 +48,11 @@ class Speedy:
         res = pyworms.aphiaDistributionsByAphiaID(id=aphiaid)
         if res is None:
             return []
-        distribution = [{"mrgid": re.search("\\d+", entry["locationID"])[0], "establishmentMeans": entry["establishmentMeans"]} for entry in res]
+        distribution = [{
+            "mrgid": re.search("\\d+", entry["locationID"])[0],
+            "establishmentMeans": entry["establishmentMeans"],
+            "invasiveness": entry["invasiveness"]
+        } for entry in res]
         return distribution
 
     def index_geometry(self, geometry: geopandas.GeoSeries) -> pd.DataFrame:
@@ -140,6 +144,7 @@ class Speedy:
                 df = self.get_indexed_mrgid(mrgid)
                 df["mrgid"] = mrgid
                 df["establishmentMeans"] = shape["establishmentMeans"]
+                df["invasiveness"] = shape["invasiveness"]
                 frames.append(df)
             except FileNotFoundError as e:
                 if self.ignore_missing_wkt:
@@ -152,8 +157,13 @@ class Speedy:
 
     def set_establishmentmeans(self, df):
         df["establishmentMeans"] = None
-        df.loc[df["native"].notna() & df["native"], "establishmentMeans"] = "native"
-        df.loc[df["introduced"].notna() & df["introduced"], "establishmentMeans"] = "introduced"
+        df.loc[df["establishmentMeans_native"].notna() & df["establishmentMeans_native"], "establishmentMeans"] = "native"
+        df.loc[df["establishmentMeans_introduced"].notna() & df["establishmentMeans_introduced"], "establishmentMeans"] = "introduced"
+
+    def set_invasiveness(self, df):
+        df["invasiveness"] = None
+        df.loc[df["invasiveness_invasive"].notna() & df["invasiveness_invasive"], "invasiveness"] = "invasive"
+        df.loc[df["invasiveness_concern"].notna() & df["invasiveness_concern"], "invasiveness"] = "concern"
 
     def resample(self, df: pd.DataFrame, resolution: int) -> pd.DataFrame:
 
@@ -165,6 +175,7 @@ class Speedy:
 
         resampled = self.summarize_h3_pandas(df)
         self.set_establishmentmeans(resampled)
+        self.set_invasiveness(resampled)
 
         return resampled
 
@@ -175,9 +186,11 @@ class Speedy:
             "records": "sum",
             "min_year": "min",
             "max_year": "max",
-            "native": "max",
-            "introduced": "max",
-            "uncertain": "max"
+            "establishmentMeans_native": "max",
+            "establishmentMeans_introduced": "max",
+            "establishmentMeans_uncertain": "max",
+            "invasiveness_invasive": "max",
+            "invasiveness_concern": "max"
         }).reset_index()
 
     def summarize_h3_duckdb(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -191,9 +204,11 @@ class Speedy:
                 sum(records) as records,
                 min(min_year) as min_year,
                 max(max_year) as max_year,
-                max(native) as native,
-                max(introduced) as introduced,
-                max(uncertain) as uncertain
+                max(establishmentMeans_native) as establishmentMeans_native,
+                max(establishmentMeans_introduced) as establishmentMeans_introduced,
+                max(establishmentMeans_uncertain) as establishmentMeans_uncertain,
+                max(invasiveness_invasive) as invasiveness_invasive,
+                max(invasiveness_concern) as invasiveness_concern
             from dist_data group by h3
         """).fetchdf()
         return summ
@@ -284,20 +299,25 @@ class Speedy:
         worms_grid = self.get_worms_distribution(aphiaid)
 
         if worms_grid is not None:
-            worms_grid["native"] = worms_grid["establishmentMeans"].str.startswith("Native")
-            worms_grid["introduced"] = worms_grid["establishmentMeans"].str.startswith("Alien")
-            worms_grid["uncertain"] = worms_grid["establishmentMeans"].str.startswith("Origin")
+            worms_grid["establishmentMeans_native"] = worms_grid["establishmentMeans"].str.startswith("Native")
+            worms_grid["establishmentMeans_introduced"] = worms_grid["establishmentMeans"].str.startswith("Alien")
+            worms_grid["establishmentMeans_uncertain"] = worms_grid["establishmentMeans"].str.startswith("Origin")
+
+            worms_grid["invasiveness_invasive"] = worms_grid["invasiveness"] == "Invasive"
+            worms_grid["invasiveness_concern"] = worms_grid["invasiveness"] == "Of concern"
 
             worms_grid.fillna(value={
-                "native": False,
-                "introduced": False,
-                "uncertain": False
+                "establishmentMeans_native": False,
+                "establishmentMeans_introduced": False,
+                "establishmentMeans_uncertain": False,
+                "invasiveness_invasive": False,
+                "invasiveness_concern": False
             }, inplace=True)
 
             layers.append(worms_grid)
 
         else:
-            layers.append(pd.DataFrame({col: pd.Series(dtype=bool) for col in ["native", "introduced", "uncertain"]}))
+            layers.append(pd.DataFrame({col: pd.Series(dtype=bool) for col in ["establishmentMeans_native", "establishmentMeans_introduced", "establishmentMeans_uncertain", "invasiveness_invasive", "invasiveness_concern"]}))
 
         # create summary
 
@@ -306,6 +326,7 @@ class Speedy:
         merged = pd.concat(layers)
         merged = self.summarize_h3_duckdb(merged)
         self.set_establishmentmeans(merged)
+        self.set_invasiveness(merged)
 
         # resample
 
@@ -318,14 +339,17 @@ class Speedy:
         merged["h3"] = merged["h3"].astype("string[pyarrow]")
         merged["source_obis"] = merged["source_obis"].astype("bool")
         merged["source_gbif"] = merged["source_gbif"].astype("bool")
-        merged["native"] = merged["native"].astype("bool")
-        merged["introduced"] = merged["introduced"].astype("bool")
-        merged["uncertain"] = merged["uncertain"].astype("bool")
+        merged["establishmentMeans_native"] = merged["establishmentMeans_native"].astype("bool")
+        merged["establishmentMeans_introduced"] = merged["establishmentMeans_introduced"].astype("bool")
+        merged["establishmentMeans_uncertain"] = merged["establishmentMeans_uncertain"].astype("bool")
+        merged["invasiveness_invasive"] = merged["invasiveness_invasive"].astype("bool")
+        merged["invasiveness_concern"] = merged["invasiveness_concern"].astype("bool")
         merged["establishmentMeans"] = merged["establishmentMeans"].astype("string[pyarrow]")
+        merged["invasiveness"] = merged["invasiveness"].astype("string[pyarrow]")
 
         return merged
 
-    def get_summary(self, aphiaid: int, resolution: int, as_geopandas: bool = True, wrap_dateline: bool = True, dissolve: bool = False) -> pd.DataFrame:
+    def get_summary(self, aphiaid: int, resolution: int, as_geopandas: bool = True, wrap_dateline: bool = True, dissolve: bool = False, tolerance: float = 0.001) -> pd.DataFrame:
         parquet_file = os.path.join(self.data_dir, f"summary_{resolution}", f"{aphiaid}.parquet")
         if self.cache_summary and os.path.exists(parquet_file):
             summary = pd.read_parquet(parquet_file)
@@ -339,7 +363,8 @@ class Speedy:
                 indexes_to_fix = list(set(list(summary.cx[178:180, -90:90].index) + list(summary.cx[-180:-178, -90:90].index) + list(summary.cx[-180:180, 80:90].index) + list(summary.cx[-180:180, -90:-80].index)))
                 summary.loc[indexes_to_fix, "geometry"] = summary.loc[indexes_to_fix, "geometry"].apply(antimeridian.fix_polygon)
             if dissolve:
-                summary = summary.dissolve(by=["source_obis", "source_gbif", "native", "introduced", "uncertain", "establishmentMeans"], as_index=False, dropna=False)[["source_obis", "source_gbif", "native", "introduced", "uncertain", "establishmentMeans", "geometry"]]
+                summary = summary.dissolve(by=["source_obis", "source_gbif", "establishmentMeans_native", "establishmentMeans_introduced", "establishmentMeans_uncertain", "invasiveness_invasive", "invasiveness_concern", "establishmentMeans", "invasiveness"], as_index=False, dropna=False)[["source_obis", "source_gbif", "establishmentMeans_native", "establishmentMeans_introduced", "establishmentMeans_uncertain", "invasiveness_invasive", "invasiveness_concern", "establishmentMeans", "invasiveness", "geometry"]]
+        summary.geometry = summary.geometry.simplify(0.001, preserve_topology=True).set_precision(grid_size=tolerance)
         return summary
 
     def create_summary_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:

@@ -23,7 +23,7 @@ def main():
     )
 
     aphiaids = [
-        105670
+        107451
     ]
 
     for aphiaid in aphiaids:
@@ -31,6 +31,7 @@ def main():
         # logging.info(f"Creating summary for AphiaID {aphiaid}")
         summary = sp.get_summary(aphiaid, resolution=5, dissolve=True)
         # summary.to_file(f"../../speedy_output/summary_{aphiaid}.geojson", driver="GeoJSON")
+        summary.to_file(f"/Users/pieter/Desktop/werk/speedy-maps/summary_{aphiaid}.geojson", driver="GeoJSON")
 
         # logging.info(f"Creating density for AphiaID {aphiaid}")
         # density = sp.get_density(aphiaid, resolution=3, sd=1000)
