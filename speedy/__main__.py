@@ -16,21 +16,23 @@ def main():
     sp = Speedy(
         h3_resolution=7,
         cache_marineregions=True,
-        cache_summary=True,
+        cache_summary=False,
         cache_density=True,
         cache_envelope=True,
         ignore_missing_wkt=True
     )
 
     aphiaids = [
-        107451
+        107119,
+        # 212506,
+        # 107451
     ]
 
     for aphiaid in aphiaids:
 
         # logging.info(f"Creating summary for AphiaID {aphiaid}")
         summary = sp.get_summary(aphiaid, resolution=5, dissolve=True)
-        # summary.to_file(f"../../speedy_output/summary_{aphiaid}.geojson", driver="GeoJSON")
+        summary.to_file(f"/Users/pieter/Desktop/werk/speedy/speedy_output/summary_{aphiaid}.geojson", driver="GeoJSON")
         summary.to_file(f"/Users/pieter/Desktop/werk/speedy-maps/summary_{aphiaid}.geojson", driver="GeoJSON")
 
         # logging.info(f"Creating density for AphiaID {aphiaid}")
