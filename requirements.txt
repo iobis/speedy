@@ -3,3 +3,6 @@ netCDF4
 statsmodels
 antimeridian==0.3.8
 shapely==2.0.6
+haversine
+palettable
+xarray
