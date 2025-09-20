@@ -1,4 +1,4 @@
-h3==4.0.0b3
+h3==4.3.1
 netCDF4
 statsmodels
 antimeridian==0.3.8
@@ -6,3 +6,4 @@ shapely==2.0.6
 haversine
 palettable
 xarray
+rasterio

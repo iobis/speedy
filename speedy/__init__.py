@@ -13,6 +13,7 @@ from haversine import haversine, Unit
 from scipy.stats import norm
 from lonboard import Map, SolidPolygonLayer, ScatterplotLayer
 from lonboard.colormap import apply_continuous_cmap
+from lonboard._layer import  BitmapLayer, BitmapTileLayer
 from palettable.cartocolors.diverging import Temps_3
 from palettable.cubehelix import classic_16, cubehelix1_16
 import numpy as np
@@ -49,6 +50,18 @@ class Speedy:
         filters = [("AphiaID", "==", aphiaid)]
         gdf = geopandas.read_parquet(os.path.join(self.data_dir, f"distributions_{self.h3_resolution}"), filters=filters)
         return gdf
+
+    def read_aphiaids(self) -> list[int]:
+        parquet_path = os.path.join(self.data_dir, f"distributions_{self.h3_resolution}", "*")
+        conn = duckdb.connect()
+        aphiaids = conn.execute(f"""
+            select AphiaID, sum(records) as total_records
+            from read_parquet("{parquet_path}")
+            group by AphiaID 
+            order by total_records desc
+        """).fetchdf()
+        return aphiaids["AphiaID"].tolist()
+
 
     def get_worms_mrgids(self, aphiaid: int) -> list:
         res = pyworms.aphiaDistributionsByAphiaID(id=aphiaid)
@@ -209,20 +222,16 @@ class Speedy:
         """).fetchdf()
         return summ
 
-    def create_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10):
-        summary = self.get_summary(aphiaid, resolution, as_geopandas=False)
-        summary = summary[(summary["source_gbif"] == True) | (summary["source_obis"] == True)]
-
-        cells = summary["h3"].tolist()
+    def calculate_density(self, cells: list[str], max_rings, sd, density_cutoff):
         densities = dict()
 
         for cell in cells:
-            cell_latlon = h3.h3_to_geo(cell)
+            cell_latlon = h3.cell_to_latlng(cell)
             continue_cell = True
             for i in range(max_rings):
-                ring = h3.k_ring(cell, i)
+                ring = h3.grid_ring(cell, i)
                 for ring_cell in ring:
-                    ring_cell_latlon = h3.h3_to_geo(ring_cell)
+                    ring_cell_latlon = h3.cell_to_latlng(ring_cell)
                     distance = haversine(cell_latlon, ring_cell_latlon, unit=Unit.KILOMETERS)
                     density = norm.pdf(distance, loc=0, scale=sd)
                     if ring_cell in densities:
@@ -242,6 +251,13 @@ class Speedy:
         df_sorted["percentile"] = (1 - df_sorted["cumulative_sum"])
         df = df.merge(df_sorted[["h3", "percentile"]], on="h3", how="left")
 
+        return df
+
+    def create_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10):
+        summary = self.get_summary(aphiaid, resolution, as_geopandas=False)
+        summary = summary[(summary["source_gbif"] == True) | (summary["source_obis"] == True)]
+        cells = summary["h3"].tolist()
+        df = self.calculate_density(cells, max_rings, sd, density_cutoff)
         return df
 
     def get_density(self, aphiaid: int, resolution: int, max_rings: int = 50, sd: float = 1000, density_cutoff: float = 1e-10, as_geopandas: bool = True, wrap_dateline: bool = True) -> pd.DataFrame:
@@ -389,14 +405,23 @@ class Speedy:
         )
         return polygon_layer
 
-    def create_density_layer(self, gdf: geopandas.GeoDataFrame) -> SolidPolygonLayer:
+    def create_density_layer(self, gdf: geopandas.GeoDataFrame, palette = Temps_3) -> SolidPolygonLayer:
         gdf = gdf[gdf["percentile"] >= 0.01]
         layer = SolidPolygonLayer.from_geopandas(
             gdf,
             opacity=1
         )
         normalized_density = gdf["density"] / gdf["density"].max()
-        layer.get_fill_color = apply_continuous_cmap(normalized_density, Temps_3, alpha=0.4)
+        layer.get_fill_color = apply_continuous_cmap(normalized_density, palette, alpha=0.4)
+        return layer
+
+    def create_suitability_layer(self, gdf: geopandas.GeoDataFrame, palette = Temps_3) -> SolidPolygonLayer:
+        layer = SolidPolygonLayer.from_geopandas(
+            gdf,
+            opacity=1
+        )
+        normalized_suitability = gdf["suitability"] / gdf["suitability"].max()
+        layer.get_fill_color = apply_continuous_cmap(normalized_suitability, palette, alpha=0.4)
         return layer
 
     def create_distribution_layer(self, gdf: geopandas.GeoDataFrame) -> ScatterplotLayer:
@@ -427,13 +452,16 @@ class Speedy:
     def export_density(self, df: pd.DataFrame, path) -> None:
         df.set_index("h3").h3.h3_to_geo_boundary().to_file(path, driver="GPKG")
 
-    def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None, distribution: geopandas.GeoDataFrame = None, envelope: geopandas.GeoDataFrame = None) -> None:
+    def export_map(self, path: str, summary: geopandas.GeoDataFrame = None, density: geopandas.GeoDataFrame = None, distribution: geopandas.GeoDataFrame = None, envelope: geopandas.GeoDataFrame = None, suitability: geopandas.GeoDataFrame = None, density_palette = Temps_3, suitability_palette = Temps_3) -> None:
         layers = []
         if envelope is not None:
             layer = self.create_envelope_layer(envelope)
             layers.append(layer)
         if density is not None:
-            layer = self.create_density_layer(density)
+            layer = self.create_density_layer(density, density_palette)
+            layers.append(layer)
+        if suitability is not None:
+            layer = self.create_suitability_layer(suitability, suitability_palette)
             layers.append(layer)
         if summary is not None:
             layer = self.create_summary_layer(summary)

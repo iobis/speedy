@@ -9,6 +9,7 @@ from matplotlib import pyplot as plt
 import geopandas
 import xarray
 import geopandas as gpd
+import logging
 
 
 def get_indexes(lats, lons, input_lat, input_lon):
@@ -29,6 +30,41 @@ def get_temperature(input_lon: float, input_lat: float, lonvals, latvals, temp) 
 
 def kde_cdf(x, kde, samples):
     return kde.integrate_box_1d(-np.inf, x)
+
+
+def calculate_thermal_suitability(distribution: geopandas.GeoDataFrame, thetao, resolution: int, kde_bandwidth: float = 0.5, data_dir: str = DEFAULT_DATA_DIR):
+    logging.info("Sampling temperature data")
+    temperatures = []
+    for coord in zip(distribution["geometry"].x, distribution["geometry"].y):
+        temp_val = thetao.sel(lat=coord[1], lon=coord[0], method="nearest").item()
+        if not np.isnan(temp_val):
+            temperatures.append(temp_val)
+    temperatures = np.array(temperatures)
+    
+    if len(temperatures) < 3:
+        return None
+
+    logging.info("Calculating KDE")
+    kde = gaussian_kde(temperatures, bw_method=kde_bandwidth)
+
+    original_shape = thetao.shape
+    temp_flat = thetao.values.flatten()
+    valid_mask = ~np.isnan(temp_flat)
+    temp_valid = temp_flat[valid_mask]
+    kde_values = np.full(temp_flat.shape, np.nan)
+
+    logging.info("Evaluating KDE")
+    kde_values[valid_mask] = kde.evaluate(temp_valid)
+    kde_reshaped = kde_values.reshape(original_shape)
+
+    suitability = xarray.DataArray(
+        kde_reshaped,
+        dims=thetao.dims,
+        coords=thetao.coords
+    )
+
+    suitability = suitability / suitability.max()
+    return suitability
 
 
 def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, resolution: int, data_dir: str = DEFAULT_DATA_DIR):
@@ -59,13 +95,18 @@ def calculate_thermal_envelope(distribution: geopandas.GeoDataFrame, resolution:
 
     # mask
 
-    xds = xarray.open_dataset(temperature_file, engine="rasterio")
+    xds = xarray.open_dataset(temperature_file, engine="netcdf4")
     thetao = xds["thetao_mean"].sel(time="2010-01-01")
+    
+    # Rescale to 1/4 resolution for faster processing (0.05° -> 0.1°)
+    logging.info("Downscaling temperature data to 1/4 resolution for performance")
+    thetao = thetao.coarsen(lat=2, lon=2, boundary='trim').mean()
+    
     envelope = thetao.where(thetao >= percentiles[0]).where(thetao <= percentiles[1])
 
     df = envelope.to_dataframe().reset_index()
     df = df[df["thetao_mean"].notna()]
-    df = df.h3.geo_to_h3(resolution, lat_col="y", lng_col="x", set_index=False)
+    df = df.h3.geo_to_h3(resolution, lat_col="lat", lng_col="lon", set_index=False)
     df["h3"] = df[f"h3_0{resolution}"]
     df = df[["h3"]].drop_duplicates()
 
