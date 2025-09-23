@@ -18,12 +18,12 @@ from cProfile import Profile
 from pstats import SortKey, Stats
 import os
 import xarray
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import functools
+from threading import Lock
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-logger = logging.getLogger(__name__)
 
 
 sp = Speedy(h3_resolution=7)
@@ -34,7 +34,7 @@ density_cutoff = 1e-8
 density_plot_cutoff = 1e-4
 suitability_kde_bandwidth = 2
 suitability_coarsen = 4
-suitability_plot_cutoff = 10e-3
+suitability_plot_cutoff = 1e-3
 
 
 def all_h3_cells(resolution: int) -> set[str]:
@@ -59,7 +59,7 @@ def sample_cell_mean(suitability, hcell: str) -> float:
 
 
 def get_density(dist_speedy):
-    logger.info("Calculating density")
+    logging.debug("Calculating density")
     dist = dist_speedy.drop("geometry", axis=1)
     dist = dist.set_index("cell").h3.h3_to_parent(resolution).reset_index()
     dist["cell"] = dist[f"h3_0{resolution}"]
@@ -91,7 +91,7 @@ def transform_density_for_plotting(density):
 
 
 def get_suitability(dist_speedy, thetao):
-    logger.info("Calculating suitability")
+    logging.debug("Calculating suitability")
     suitability = calculate_thermal_suitability(dist_speedy, thetao=thetao, resolution=resolution, kde_bandwidth=suitability_kde_bandwidth)
     h3_cells = sorted(all_h3_cells(resolution))
     values = [sample_cell_mean(suitability, h) for h in h3_cells]
@@ -106,7 +106,7 @@ def transform_suitability_for_plotting(suitability):
 
 
 def generate_png(density_plot, suitability_plot, dist_speedy, filename):
-    logger.info("Generating PNG")
+    logging.debug("Generating PNG")
     proj = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(16, 8), dpi=300, subplot_kw={"projection": proj})
     ax.set_global()
@@ -143,10 +143,11 @@ def generate_png(density_plot, suitability_plot, dist_speedy, filename):
 
 def process_species(aphiaid, thetao):
     output_path = f"speedy_output/edna_qc/parquet/{aphiaid}.parquet"
+    output_path_png = f"speedy_output/edna_qc/images/{aphiaid}.png"
 
-    if not os.path.exists(output_path):
-        logger.info(f"Processing {aphiaid}")
-        logger.info("Reading distribution data")
+    if not os.path.exists(output_path) or not os.path.exists(output_path_png):
+        logging.debug(f"Processing {aphiaid}")
+        logging.debug("Reading distribution data")
         dist_speedy = sp.read_distribution_grid(aphiaid)
         density = get_density(dist_speedy)
         suitability = get_suitability(dist_speedy, thetao)
@@ -156,7 +157,7 @@ def process_species(aphiaid, thetao):
         suitability_selected = suitability_selected.dropna(subset=["suitability"])
         joined_df = density_selected.merge(suitability_selected, on="h3", how="left")
         joined_df["aphiaid"] = aphiaid
-        logger.info(f"Saving joined data to {output_path}")
+        logging.debug(f"Saving data to {output_path}")
         joined_df.to_parquet(output_path, index=False)
 
         # ax = suitability.plot.imshow(cmap="magma", vmin=0, vmax=1, robust=True)
@@ -164,32 +165,31 @@ def process_species(aphiaid, thetao):
         # sp.export_map(f"speedy_output/map_{aphiaid}.html", density=density_plot, distribution=dist_speedy, suitability=suitability_plot, density_palette=Teal_3, suitability_palette=Magenta_5)
         density_plot = transform_density_for_plotting(density)
         suitability_plot = transform_suitability_for_plotting(suitability)
-        generate_png(density_plot, suitability_plot, dist_speedy, f"speedy_output/edna_qc/images/{aphiaid}.png")
+        logging.debug(f"Saving image to {output_path_png}")
+        generate_png(density_plot, suitability_plot, dist_speedy, output_path_png)
+        return f"Processed {aphiaid}"
     else:
-        logger.info(f"Output file {output_path} already exists, skipping data processing")
+        logging.debug(f"Output file {output_path} already exists, skipping data processing")
+        return f"Skipped {aphiaid} (already exists)"
 
 
-# def main():
-#     aphiaids = [
-#         141433,
-#         345684
-#     ]
-#     logging.info("Opening temperature dataset")
-#     temperature_file = os.path.join(DEFAULT_DATA_DIR, TEMPERATURE_FILENAME)
-#     xds = xarray.open_dataset(temperature_file, engine="netcdf4")
-#     thetao = xds["thetao_mean"].sel(time="2010-01-01")
-#     logging.info("Downscaling temperature data")
-#     thetao = thetao.coarsen(lat=suitability_coarsen, lon=suitability_coarsen, boundary="exact").mean()
+class ProgressTracker:
+    def __init__(self, total_tasks):
+        self.completed = 0
+        self.total = total_tasks
 
-#     for aphiaid in aphiaids:
-#         process_species(aphiaid, thetao)
+    def callback(self, future):
+        self.completed += 1
+        percent = (self.completed / self.total) * 100
+        aphiaid = future.aphiaid
+        try:
+            result = future.result()
+            logging.info(f"✅ Completed {self.completed}/{self.total} ({percent:.1f}%) - AphiaID: {aphiaid}")
+        except Exception as e:
+            logging.error(f"❌ Failed {self.completed}/{self.total} ({percent:.1f}%) - AphiaID: {aphiaid}: {e}")
 
 
-def main_parallel():
-    # aphiaids = [
-    #     141433,
-    #     345684
-    # ]
+if __name__ == "__main__":
     aphiaids = sp.read_aphiaids()
     logging.info(f"Found {len(aphiaids)} aphiaids")
     logging.info("Opening temperature dataset")
@@ -200,10 +200,17 @@ def main_parallel():
     thetao = thetao.coarsen(lat=suitability_coarsen, lon=suitability_coarsen, boundary="exact").mean()
 
     process_func = functools.partial(process_species, thetao=thetao)
-    
-    with ProcessPoolExecutor(max_workers=4) as executor:
-        executor.map(process_func, aphiaids)
+
+    with ProcessPoolExecutor(max_workers=6) as executor:
+        futures = []
+        for aphiaid in aphiaids:
+            future = executor.submit(process_func, aphiaid)
+            future.aphiaid = aphiaid
+            futures.append(future)
+
+        progress_tracker = ProgressTracker(len(futures))
+        for future in futures:
+            future.add_done_callback(progress_tracker.callback)
 
 
-if __name__ == "__main__":
-    main_parallel()
+# TODO refactor: precalculate temperature layer to h3, evaluate kde

@@ -55,10 +55,10 @@ class Speedy:
         parquet_path = os.path.join(self.data_dir, f"distributions_{self.h3_resolution}", "*")
         conn = duckdb.connect()
         aphiaids = conn.execute(f"""
-            select AphiaID, sum(records) as total_records
+            select AphiaID, sum(records) as total_records, count(*) as cells
             from read_parquet("{parquet_path}")
             group by AphiaID 
-            order by total_records desc
+            order by cells desc
         """).fetchdf()
         return aphiaids["AphiaID"].tolist()
 

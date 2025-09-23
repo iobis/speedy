@@ -33,7 +33,7 @@ def kde_cdf(x, kde, samples):
 
 
 def calculate_thermal_suitability(distribution: geopandas.GeoDataFrame, thetao, resolution: int, kde_bandwidth: float = 0.5, data_dir: str = DEFAULT_DATA_DIR):
-    logging.info("Sampling temperature data")
+    logging.debug("Sampling temperature data")
     temperatures = []
     for coord in zip(distribution["geometry"].x, distribution["geometry"].y):
         temp_val = thetao.sel(lat=coord[1], lon=coord[0], method="nearest").item()
@@ -44,7 +44,7 @@ def calculate_thermal_suitability(distribution: geopandas.GeoDataFrame, thetao, 
     if len(temperatures) < 3:
         return None
 
-    logging.info("Calculating KDE")
+    logging.debug("Calculating KDE")
     kde = gaussian_kde(temperatures, bw_method=kde_bandwidth)
 
     original_shape = thetao.shape
@@ -53,7 +53,7 @@ def calculate_thermal_suitability(distribution: geopandas.GeoDataFrame, thetao, 
     temp_valid = temp_flat[valid_mask]
     kde_values = np.full(temp_flat.shape, np.nan)
 
-    logging.info("Evaluating KDE")
+    logging.debug("Evaluating KDE")
     kde_values[valid_mask] = kde.evaluate(temp_valid)
     kde_reshaped = kde_values.reshape(original_shape)
 
